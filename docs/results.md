@@ -13,7 +13,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 | `expires` | **HIT** | **HIT** | **HIT** |
 | `heuristic` (public + LM-30min) | **HIT, then expires ~200s** (≈ RFC 10% of LM age) | **HIT ≥ 602s**, expired by ~16min — fixed default TTL, far beyond RFC heuristic | **HIT** (still HIT ≥ 277s) |
 | `short` (max-age=20) | **HIT** | **HIT** | — |
-| `swr` (max-age=20 + `stale-while-revalidate=120`) | **`UPDATING`** — serves stale, revalidates in background; next request gets the new `origin_id` | **`UPDATING`** — async SWR is supported on the CDN too (stale served while revalidating, then HIT) | — |
+| `swr` (max-age=20 + `stale-while-revalidate=120`) | **`UPDATING`** — serves stale, revalidates in background; next request gets the new `origin_id` | **`UPDATING`** — same async-SWR behavior (stale served while revalidating, then HIT) | — |
 | `nostore` | BYPASS | BYPASS | never served |
 | `private` | BYPASS | BYPASS | never served |
 | `set-cookie` | BYPASS | BYPASS | never served (put is a no-op even with overridden `Cache-Control`) |
@@ -21,20 +21,9 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 | `vary` (`Vary: X-Variant`) | correct per-variant entries (`a`→`a`, `b`→`b`) | **Vary ignored** — `b`/`c` requests all HIT the stored `"a"` body | — |
 | cache scope | **tiered** — a HIT was returned in a colo that never fetched | edge per-colo — each colo missed once before HITting (SEA MISS → SJC MISS → HITs) | **colo/node-local only** — probes in SEA missed entries stored in SJC |
 
-## Key differences actually observed
+## Differences observed
 
-1. **`stale-while-revalidate` behaves the same on both.**
-   Workers Cache implements RFC 5861: `Cf-Cache-Status: UPDATING` — the client
-   gets the stale copy instantly while the origin is refreshed in the
-   background, and the next request sees a fresh `origin_id`. The CDN does the
-   same: an earlier run that observed `EXPIRED` on every request was an
-   artifact of probing outside the 140s stale window (all colos re-fetched
-   synchronously). Re-probed inside the stale window, the CDN returned
-   `UPDATING` with the stale `origin_id`, then `HIT` with the revalidated
-   body — identical semantics to Workers Cache
-   (cf. [2026-02-26 async SWR changelog](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)).
-
-2. **Heuristic freshness follows RFC on Workers Cache, not on the CDN.**
+1. **Heuristic freshness: RFC on Workers Cache, fixed default on the CDN.**
    `Cache-Control: public` + `Last-Modified: now-30min` gives ~200s freshness
    under RFC 9111 §4.2.2 (10% of 30min). Workers Cache served a HIT at ~60s and
    re-fetched by ~6min — consistent with the RFC. The CDN still served a HIT at
@@ -42,17 +31,13 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    edge TTL, much longer than the heuristic, i.e. it caches *more*
    aggressively than RFC here rather than less.
 
-3. **`Vary` on a custom header is only honored by Workers Cache.**
+2. **`Vary` on a custom header is only honored by Workers Cache.**
    With `Vary: X-Variant`, Workers Cache kept per-variant entries and always
    returned the right body (`a`→`a`, `b`→`b`). The CDN **ignores the custom
    Vary header entirely**: every request variant (`a`, `b`, `c`) HIT the first
    stored `"a"` body — the cache key does not partition on `X-Variant`.
 
-4. **Both layers cache `Authorization`-required requests that say `public`.**
-   RFC 7233 §3.5 makes an explicit `public` override the Authorization
-   default, and both caches honor it.
-
-5. **Architecture: tiered vs. local.**
+3. **Architecture: tiered vs. local.**
    Workers Cache answered a HIT in a colo that never stored the entry
    (upper-tier tiered cache). On the CDN path each edge colo missed once
    before hitting (no cross-colo HIT observed). `caches.default` is strictly
@@ -61,13 +46,30 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    probes. For load that lands in many edge locations, the Cache API behaves
    like N small caches.
 
-6. **The Cache API is a different product.**
+4. **The Cache API is a different product.**
    `caches.default` lets the Worker *override* origin directives — serving
    `nostore`/`private` responses with a rewritten `Cache-Control` works —
    but it still refuses `Set-Cookie` bodies regardless of headers, and it is
    not tiered. Workers Cache (`cache.enabled`) is declarative: it front-runs
    the Worker, follows RFC semantics automatically, and also exposes
    `ctx.cache.purge()` — no way to do that on the CDN path from the Worker.
+
+## Same behavior on both paths
+
+- **`stale-while-revalidate`: identical semantics.** Workers Cache implements
+  RFC 5861 (`Cf-Cache-Status: UPDATING` — stale served instantly, background
+  revalidation, next request gets the new `origin_id`), and the CDN does the
+  same: re-probed inside the 140s stale window it returned `UPDATING` with the
+  stale `origin_id`, then `HIT` with the revalidated body
+  (cf. [2026-02-26 async SWR changelog](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)).
+  An earlier run that observed `EXPIRED` on every request was an artifact of
+  probing outside the stale window.
+- **`explicit` / `expires` / `short`: HIT on both** — normal TTL-driven
+  caching works the same.
+- **`nostore` / `private` / `set-cookie`: BYPASS on both** — uncacheable
+  directives are respected identically.
+- **`auth-public`: HIT on both** — RFC 7233 §3.5 makes an explicit `public`
+  override the Authorization default, and both caches honor it.
 
 ## Notes & caveats
 
