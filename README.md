@@ -1,5 +1,7 @@
 # study-cf-workers-cache
 
+**English** | [日本語](README.ja.md)
+
 Comparison of **Cloudflare Workers Cache** (`[cache] enabled = true`, [blog post](https://blog.cloudflare.com/workers-cache/)) against a **traditional proxy cache** (Cloudflare CDN in front of a Vercel origin), plus the legacy **`caches.default` Cache API** for reference.
 
 ## Architecture
@@ -57,4 +59,4 @@ A HIT or UPDATING counts as served-from-cache.
 
 ## Results
 
-See [docs/results.md](docs/results.md) for the measured behavior matrix.
+See [docs/results.md](docs/results.md) ([日本語](docs/results.ja.md)) for the measured behavior matrix.

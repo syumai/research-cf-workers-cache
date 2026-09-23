@@ -1,5 +1,7 @@
 # Measured results (2026-09-23, all times UTC)
 
+**English** | [日本語](results.ja.md)
+
 Identical origin responses on both sides. `cf-cache-status` / `X-Workers-Cache`
 observe the caching layer directly; `origin_id` proves when the origin was hit.
 
