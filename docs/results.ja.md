@@ -32,7 +32,7 @@
    デフォルト edge TTL を適用しており、ここではむしろ RFC より*積極的に*
    キャッシュしていることになります。
 
-2. **カスタムヘッダの `Vary`：Workers Cache は自動、CDN は opt-in（仕様通り���。**
+2. **カスタムヘッダの `Vary`：Workers Cache は自動、CDN は opt-in（仕様通り）。**
    `Vary: X-Variant` に対し、Workers Cache は variant ごとのエントリを保持し
    常に正しいボディ（`a`→`a`、`b`→`b`）を返しました。CDN はデフォルトでは
    `Vary` を無視します — [Cloudflare の cache ドキュメント](https://developers.cloudflare.com/cache/concepts/cache-control/)
