@@ -11,24 +11,26 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 | `expires` | **HIT** | **HIT** | **HIT** |
 | `heuristic` (public + LM-30min) | **HIT, then expires ~200s** (≈ RFC 10% of LM age) | **HIT ≥ 602s**, expired by ~16min — fixed default TTL, far beyond RFC heuristic | **HIT** (still HIT ≥ 277s) |
 | `short` (max-age=20) | **HIT** | **HIT** | — |
-| `swr` (max-age=20 + `stale-while-revalidate=120`) | **`UPDATING`** — serves stale, revalidates in background; next request gets the new `origin_id` | **`EXPIRED` every request** — never serves from cache; effectively uncached | — |
+| `swr` (max-age=20 + `stale-while-revalidate=120`) | **`UPDATING`** — serves stale, revalidates in background; next request gets the new `origin_id` | **`UPDATING`** — async SWR is supported on the CDN too (stale served while revalidating, then HIT) | — |
 | `nostore` | BYPASS | BYPASS | never served |
 | `private` | BYPASS | BYPASS | never served |
 | `set-cookie` | BYPASS | BYPASS | never served (put is a no-op even with overridden `Cache-Control`) |
 | `auth-public` (Authorization + `public`) | **HIT** | **HIT** | **HIT** |
-| `vary` (`Vary: X-Variant`) | correct per-variant entries (`a`→`a`, `b`→`b`) | **wrong variant served** (`X-Variant: b` got cached body `"a"`) | — |
-| cache scope | **tiered** — a HIT was returned from an entry stored by a different colo | colo-local edge cache (entries seen in the colo that stored them) | **colo/node-local only** — probes in SEA missed entries stored in SJC |
+| `vary` (`Vary: X-Variant`) | correct per-variant entries (`a`→`a`, `b`→`b`) | **Vary ignored** — `b`/`c` requests all HIT the stored `"a"` body | — |
+| cache scope | **tiered** — a HIT was returned in a colo that never fetched | edge per-colo — each colo missed once before HITting (SEA MISS → SJC MISS → HITs) | **colo/node-local only** — probes in SEA missed entries stored in SJC |
 
 ## Key differences actually observed
 
-1. **`stale-while-revalidate` is the decisive behavioral split.**
+1. **`stale-while-revalidate` behaves the same on both.**
    Workers Cache implements RFC 5861: `Cf-Cache-Status: UPDATING` — the client
-   gets the stale copy instantly while the origin is refreshed in the background,
-   and the next request sees a fresh `origin_id`. The same response through the
-   CDN is `EXPIRED` on **every** request — the directive makes the CDN treat the
-   response as instantly stale, so it re-fetches from the origin synchronously
-   every time. `max-age=20` *without* the directive caches fine on both sides,
-   isolating the cause to SWR itself, not the short TTL.
+   gets the stale copy instantly while the origin is refreshed in the
+   background, and the next request sees a fresh `origin_id`. The CDN does the
+   same: an earlier run that observed `EXPIRED` on every request was an
+   artifact of probing outside the 140s stale window (all colos re-fetched
+   synchronously). Re-probed inside the stale window, the CDN returned
+   `UPDATING` with the stale `origin_id`, then `HIT` with the revalidated
+   body — identical semantics to Workers Cache
+   (cf. [2026-02-26 async SWR changelog](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)).
 
 2. **Heuristic freshness follows RFC on Workers Cache, not on the CDN.**
    `Cache-Control: public` + `Last-Modified: now-30min` gives ~200s freshness
@@ -38,23 +40,24 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    edge TTL, much longer than the heuristic, i.e. it caches *more*
    aggressively than RFC here rather than less.
 
-3. **`Vary` on a custom header is only safe on Workers Cache.**
+3. **`Vary` on a custom header is only honored by Workers Cache.**
    With `Vary: X-Variant`, Workers Cache kept per-variant entries and always
-   returned the right body. The CDN stored the variants but then served a
-   `"a"` body to an `X-Variant: b` request — the cache key didn't fully
-   partition on the custom header.
+   returned the right body (`a`→`a`, `b`→`b`). The CDN **ignores the custom
+   Vary header entirely**: every request variant (`a`, `b`, `c`) HIT the first
+   stored `"a"` body — the cache key does not partition on `X-Variant`.
 
 4. **Both layers cache `Authorization`-required requests that say `public`.**
-   This surprised the "traditional proxies are conservative" intuition in both
-   directions: RFC 7233 §3.5 makes an explicit `public` override the
-   Authorization default, and both caches honor it.
+   RFC 7233 §3.5 makes an explicit `public` override the Authorization
+   default, and both caches honor it.
 
 5. **Architecture: tiered vs. local.**
    Workers Cache answered a HIT in a colo that never stored the entry
-   (upper-tier tiered cache). `caches.default` is strictly colo/node-local —
-   the same URL fetched from SJC and SEA produced independent caches, and
-   the SEA entry was even lost between consecutive probes. For load that
-   lands in many edge locations, the Cache API behaves like N small caches.
+   (upper-tier tiered cache). On the CDN path each edge colo missed once
+   before hitting (no cross-colo HIT observed). `caches.default` is strictly
+   colo/node-local — the same URL fetched from SJC and SEA produced
+   independent caches, and the SEA entry was even lost between consecutive
+   probes. For load that lands in many edge locations, the Cache API behaves
+   like N small caches.
 
 6. **The Cache API is a different product.**
    `caches.default` lets the Worker *override* origin directives — serving
