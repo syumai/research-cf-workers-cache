@@ -39,6 +39,9 @@
    によれば、Cache Rules の Vary 設定・Vary for images・`Accept-Encoding`
    のいずれでもない限り「Cloudflare does not consider vary values in caching
    decisions」であり、これは意図された仕様です（`Vary: *` は常に BYPASS）。
+   なお Cache Rules の Vary 設定は 2026-09-22（本計測の前日）に
+   リリースされたばかりの新機能です
+   （[Vary サポートのブログ](https://blog.cloudflare.com/vary-support/)）。
    実測でも両方向を確認：設定なしでは全variant（`a`・`b`・`c`）が保存済みの
    `"a"` ボディを HIT、キャッシュルールに `vary.headers.x-variant =
    passthrough` を追加後は variant ごとに正しいエントリを保持しました。

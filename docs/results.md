@@ -38,7 +38,10 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    "Cloudflare does not consider vary values in caching decisions" unless you
    configure the Cache Rules Vary setting, Vary for images, or the header is
    `Accept-Encoding` (and `Vary: *` always bypasses). This is intended spec,
-   not a bug. Empirically confirmed both ways: without the setting every
+   not a bug — and it is brand new: the Cache Rules Vary setting only shipped
+   on 2026-09-22, the day before this measurement
+   ([Vary support blog post](https://blog.cloudflare.com/vary-support/)).
+   Empirically confirmed both ways: without the setting every
    request variant (`a`, `b`, `c`) HIT the stored `"a"` body; after adding
    `vary.headers.x-variant = passthrough` to the cache rule, the CDN kept
    correct per-variant entries. The real difference is therefore *defaults*:
