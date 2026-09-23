@@ -9,7 +9,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 |---|---|---|---|
 | `explicit` (max-age=120) | **HIT** | **HIT** | **HIT** |
 | `expires` | **HIT** | **HIT** | **HIT** |
-| `heuristic` (public + LM-30min) | **HIT, then expires ~200s** (≈ RFC 10% of LM age) | **HIT ≥ 602s** — fixed default TTL, far beyond RFC heuristic | **HIT** (still HIT ≥ 277s) |
+| `heuristic` (public + LM-30min) | **HIT, then expires ~200s** (≈ RFC 10% of LM age) | **HIT ≥ 602s**, expired by ~16min — fixed default TTL, far beyond RFC heuristic | **HIT** (still HIT ≥ 277s) |
 | `short` (max-age=20) | **HIT** | **HIT** | — |
 | `swr` (max-age=20 + `stale-while-revalidate=120`) | **`UPDATING`** — serves stale, revalidates in background; next request gets the new `origin_id` | **`EXPIRED` every request** — never serves from cache; effectively uncached | — |
 | `nostore` | BYPASS | BYPASS | never served |
@@ -34,8 +34,9 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    `Cache-Control: public` + `Last-Modified: now-30min` gives ~200s freshness
    under RFC 9111 §4.2.2 (10% of 30min). Workers Cache served a HIT at ~60s and
    re-fetched by ~6min — consistent with the RFC. The CDN still served a HIT at
-   **age 602s** — it applies a fixed default edge TTL, much longer than the
-   heuristic, i.e. it caches *more* aggressively than RFC here rather than less.
+   **age 602s** and only re-fetched after ~16min — it applies a fixed default
+   edge TTL, much longer than the heuristic, i.e. it caches *more*
+   aggressively than RFC here rather than less.
 
 3. **`Vary` on a custom header is only safe on Workers Cache.**
    With `Vary: X-Variant`, Workers Cache kept per-variant entries and always
@@ -74,6 +75,6 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
   is the CDN default, not a misconfiguration.
 - `Set-Cookie` suppression on the CDN is expected RFC behavior; including it
   for completeness.
-- Times: heuristic TTL on Workers Cache bracketed to (60s, ~390s]; CDN still
-  serving at 602s — CDN default appears to be minutes-to-hours rather than
-  the RFC 10% heuristic.
+- Times: heuristic TTL on Workers Cache bracketed to (60s, ~390s] — consistent
+  with RFC 10% (~200s). CDN served a HIT at age 602s and expired by ~16min,
+  i.e. a default edge TTL ~3-5x the RFC heuristic.
