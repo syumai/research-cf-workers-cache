@@ -19,7 +19,7 @@
 | `private` | BYPASS | BYPASS | 返却なし |
 | `set-cookie` | BYPASS | BYPASS | 返却なし（`Cache-Control` 上書きしても put は no-op） |
 | `auth-public`（Authorization + `public`） | **HIT** | **HIT** | **HIT** |
-| `vary`（`Vary: X-Variant`） | variant ごとに正しいエントリ（`a`→`a`、`b`→`b`） | **Vary 無視** — `b`/`c` リクエストも全て保存済み `"a"` ボディを HIT | — |
+| `vary`（`Vary: X-Variant`） | variant ごとに正しいエントリ（`a`→`a`、`b`→`b`） | **デフォルトでは Vary 無視** — `b`/`c` リクエストも全て `"a"` ボディを HIT。**Vary キャッシュルール追加後は正常**（`x-variant: passthrough`） | — |
 | キャッシュスコープ | **tiered** — 未フェッチの colo でも HIT が返る | エッジは colo ごと — 各 colo で1回 MISS してから HIT（SEA MISS → SJC MISS → HIT） | **colo/ノードローカルのみ** — SEA のプローブは SJC に保存されたエントリに MISS |
 
 ## 確認できた違い
@@ -32,11 +32,18 @@
    デフォルト edge TTL を適用しており、ここではむしろ RFC より*積極的に*
    キャッシュしていることになります。
 
-2. **カスタムヘッダの `Vary` が効くのは Workers Cache のみ。**
+2. **カスタムヘッダの `Vary`：Workers Cache は自動、CDN は opt-in（仕様通り���。**
    `Vary: X-Variant` に対し、Workers Cache は variant ごとのエントリを保持し
-   常に正しいボディ（`a`→`a`、`b`→`b`）を返しました。CDN は**カスタム Vary
-   ヘッダを完全に無視**します：`a`・`b`・`c` 全てのリクエストが最初に保存された
-   `"a"` ボディを HIT — キャッシュキーが `X-Variant` で分割されていません。
+   常に正しいボディ（`a`→`a`、`b`→`b`）を返しました。CDN はデフォルトでは
+   `Vary` を無視します — [Cloudflare の cache ドキュメント](https://developers.cloudflare.com/cache/concepts/cache-control/)
+   によれば、Cache Rules の Vary 設定・Vary for images・`Accept-Encoding`
+   のいずれでもない限り「Cloudflare does not consider vary values in caching
+   decisions」であり、これは意図された仕様です（`Vary: *` は常に BYPASS）。
+   実測でも両方向を確認：設定なしでは全variant（`a`・`b`・`c`）が保存済みの
+   `"a"` ボディを HIT、キャッシュルールに `vary.headers.x-variant =
+   passthrough` を追加後は variant ごとに正しいエントリを保持しました。
+   つまり本質的な違いは*デフォルト*であり、Workers Cache は RFC 9111 に
+   標準準拠するのに対し、CDN はヘッダ単位の opt-in 設定が必要です。
 
 3. **アーキテクチャ：tiered vs ローカル。**
    Workers Cache は、エントリを一度もフェッチしていない colo でも HIT を返しました
@@ -79,9 +86,10 @@
   `Cache-Control: public` を明示的に送信しています。また全レスポンスに
   `Vercel-CDN-Cache-Control: no-store` を付与し、Vercel 自身のエッジが
   介入しないようにしています。
-- CDN パスのキャッシュルール：`http.request.uri.path contains "/api/"` →
-  "Eligible for cache"。明示的な edge TTL は未設定 — heuristic の長い TTL は
-  設定ミスではなく CDN のデフォルトです。
+- CDN パスのキャッシュルール：`http.host eq "cache-compare.syumai.dev"` →
+  `set_cache_settings`（`cache: true` で eligible。後に `vary.headers.
+  x-variant = passthrough` を追加）。明示的な edge TTL は未設定 —
+  heuristic の長い TTL は設定ミスではなく CDN のデフォルトです。
 - CDN における `Set-Cookie` 抑止は期待される RFC 挙動であり、完全性のために
   記載しています。
 - 時刻：Workers Cache の heuristic TTL は (60s, ~390s] に bracket — RFC 10%

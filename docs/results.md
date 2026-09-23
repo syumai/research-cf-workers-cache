@@ -18,7 +18,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 | `private` | BYPASS | BYPASS | never served |
 | `set-cookie` | BYPASS | BYPASS | never served (put is a no-op even with overridden `Cache-Control`) |
 | `auth-public` (Authorization + `public`) | **HIT** | **HIT** | **HIT** |
-| `vary` (`Vary: X-Variant`) | correct per-variant entries (`a`→`a`, `b`→`b`) | **Vary ignored** — `b`/`c` requests all HIT the stored `"a"` body | — |
+| `vary` (`Vary: X-Variant`) | correct per-variant entries (`a`→`a`, `b`→`b`) | **Vary ignored by default** — `b`/`c` requests all HIT the stored `"a"` body; **correct after adding a Vary cache rule** (`x-variant: passthrough`) | — |
 | cache scope | **tiered** — a HIT was returned in a colo that never fetched | edge per-colo — each colo missed once before HITting (SEA MISS → SJC MISS → HITs) | **colo/node-local only** — probes in SEA missed entries stored in SJC |
 
 ## Differences observed
@@ -31,11 +31,19 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    edge TTL, much longer than the heuristic, i.e. it caches *more*
    aggressively than RFC here rather than less.
 
-2. **`Vary` on a custom header is only honored by Workers Cache.**
-   With `Vary: X-Variant`, Workers Cache kept per-variant entries and always
-   returned the right body (`a`→`a`, `b`→`b`). The CDN **ignores the custom
-   Vary header entirely**: every request variant (`a`, `b`, `c`) HIT the first
-   stored `"a"` body — the cache key does not partition on `X-Variant`.
+2. **`Vary` on a custom header: automatic on Workers Cache, opt-in on the
+   CDN (by design).** With `Vary: X-Variant`, Workers Cache kept per-variant
+   entries and always returned the right body (`a`→`a`, `b`→`b`). The CDN
+   ignores `Vary` by default — per the [Cloudflare cache docs](https://developers.cloudflare.com/cache/concepts/cache-control/):
+   "Cloudflare does not consider vary values in caching decisions" unless you
+   configure the Cache Rules Vary setting, Vary for images, or the header is
+   `Accept-Encoding` (and `Vary: *` always bypasses). This is intended spec,
+   not a bug. Empirically confirmed both ways: without the setting every
+   request variant (`a`, `b`, `c`) HIT the stored `"a"` body; after adding
+   `vary.headers.x-variant = passthrough` to the cache rule, the CDN kept
+   correct per-variant entries. The real difference is therefore *defaults*:
+   Workers Cache follows RFC 9111 out of the box, the CDN needs per-header
+   opt-in configuration.
 
 3. **Architecture: tiered vs. local.**
    Workers Cache answered a HIT in a colo that never stored the entry
@@ -77,9 +85,10 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
   function omits the header; the `heuristic`/`expires` cases therefore send
   `Cache-Control: public` explicitly. `Vercel-CDN-Cache-Control: no-store` is
   set on every response so Vercel's own edge never participates.
-- Cache Rule used on the CDN path: `http.request.uri.path contains "/api/"` →
-  "Eligible for cache". No explicit edge TTL was set — the long heuristic TTL
-  is the CDN default, not a misconfiguration.
+- Cache Rule used on the CDN path: `http.host eq "cache-compare.syumai.dev"` →
+  `set_cache_settings` with `cache: true` (eligible for cache; later extended
+  with `vary.headers.x-variant = passthrough`). No explicit edge TTL was set —
+  the long heuristic TTL is the CDN default, not a misconfiguration.
 - `Set-Cookie` suppression on the CDN is expected RFC behavior; including it
   for completeness.
 - Times: heuristic TTL on Workers Cache bracketed to (60s, ~390s] — consistent
