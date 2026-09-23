@@ -1,8 +1,13 @@
 name = "study-cf-workers-cache"
 main = "src/index.js"
-compatibility_date = "2025-09-01"
+compatibility_date = "2026-05-01"
 workers_dev = true
+
+# Workers Cache: Cloudflare's tiered cache sits in front of this Worker and
+# caches /api/respond responses purely from their HTTP cache headers.
+[cache]
+enabled = true
 
 [vars]
 # Set to the deployed Vercel origin, e.g. https://<project>.vercel.app
-ORIGIN_BASE = "https://PLACEHOLDER.vercel.app"
+ORIGIN_BASE = "https://study-cf-workers-cache.vercel.app"

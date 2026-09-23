@@ -1,54 +1,69 @@
 #!/usr/bin/env bash
-# Verify cache behavior across the three paths for every origin case.
+# Verify cache behavior across the cache paths for every origin case.
 #
 #   WORKER_URL  e.g. https://study-cf-workers-cache.<acct>.workers.dev
 #   CDN_URL     e.g. https://cache-compare.syumai.dev
-#   AUTH_TOKEN  optional bearer token for the auth-* cases
-#   SLEEP       seconds between the miss and hit probes (default 1)
+#   AUTH_TOKEN  bearer token sent on every request (for auth-* cases)
+#   PROBES      number of requests per (path, case) (default 8)
+#   SLEEP       seconds between probes (default 1)
 #
-# For each (path, case) the script sends two requests to the same unique URL
-# and reports the cache's own status header plus whether the two responses
-# share an X-Origin-Id (i.e. the second came from a stored copy rather than
-# a fresh origin fetch).
+# Each (path, case) uses a fresh per-run URL so the first probe always misses.
+# Caches are colo-local, so probes deliberately span multiple colos: a case is
+# "cached" only if later probes come back HIT in a colo that already stored it.
 set -u
 
 WORKER_URL=${WORKER_URL:?set WORKER_URL}
 CDN_URL=${CDN_URL:-}
+PROBES=${PROBES:-8}
 SLEEP=${SLEEP:-1}
-CASES=${CASES:-explicit expires heuristic nostore private set-cookie}
+CASES=${CASES:-explicit expires heuristic swr nostore private set-cookie auth-public}
 AUTH_TOKEN=${AUTH_TOKEN:-}
 RUN=${RUN:-$(date +%s)}
 
-req() { # url -> "<x-origin-id>|<cache-status>|<put-error>"
+req() { # url -> "<x-origin-id>|<cache-status>|<put-error>|<colo>"
   local url=$1
   curl -s -D /tmp/vh.$$ -o /tmp/vb.$$ "${extra[@]+"${extra[@]}"}" "$url"
-  local oid cs pe
-  oid=$(tr -d '\r' < /tmp/vh.$$ | awk -F': ' 'tolower($1)=="x-origin-id"{print $2}')
-  cs=$(tr -d '\r' < /tmp/vh.$$ | awk -F': ' 'tolower($1)=="x-workers-cache"{print $2}')
-  [ -z "$cs" ] && cs=$(tr -d '\r' < /tmp/vh.$$ | awk -F': ' 'tolower($1)=="cf-cache-status"{print $2}')
-  pe=$(tr -d '\r' < /tmp/vh.$$ | awk -F': ' 'tolower($1)=="x-cache-put-error"{print $2}')
-  printf '%s|%s|%s' "${oid:-?}" "${cs:--}" "${pe:--}"
+  local h oid cs pe ray
+  h=$(tr -d '\r' < /tmp/vh.$$)
+  oid=$(printf '%s' "$h" | awk -F': ' 'tolower($1)=="x-origin-id"{print $2}')
+  cs=$(printf '%s' "$h" | awk -F': ' 'tolower($1)=="x-workers-cache"{print $2}')
+  [ -z "$cs" ] && cs=$(printf '%s' "$h" | awk -F': ' 'tolower($1)=="cf-cache-status"{print $2}')
+  pe=$(printf '%s' "$h" | awk -F': ' 'tolower($1)=="x-cache-put-error"{print $2}')
+  ray=$(printf '%s' "$h" | awk -F': ' 'tolower($1)=="cf-ray"{print $2}' | sed 's/.*-//')
+  printf '%s|%s|%s|%s' "${oid:-?}" "${cs:--}" "${pe:--}" "${ray:-?}"
 }
 
 extra=()
 [ -n "$AUTH_TOKEN" ] && extra=(-H "Authorization: Bearer $AUTH_TOKEN")
 
-printf '%-14s %-26s %-26s %-26s\n' case cache-api passthrough cdn-proxy
+paths=("$WORKER_URL/api/respond" "$WORKER_URL/cache-api/api/respond" "$WORKER_URL/cache-override/api/respond" "$WORKER_URL/passthrough/api/respond" "${CDN_URL:+$CDN_URL/api/respond}")
+labels=(workers-cache cache-api cache-override passthrough cdn-proxy)
+
+printf '%-14s' case
+for l in "${labels[@]}"; do printf ' %-18s' "$l"; done
+printf '\n'
+
 for c in $CASES; do
-  row=("$c")
-  for path in "$WORKER_URL/cache-api/api/respond" "$WORKER_URL/passthrough/api/respond" "${CDN_URL:+$CDN_URL/api/respond}"; do
-    [ -z "$path" ] && { row+=("n/a"); continue; }
-    r1=$(req "$path?case=$c&run=$RUN")
-    sleep "$SLEEP"
-    r2=$(req "$path?case=$c&run=$RUN")
-    id1=${r1%%|*}; rest=${r1#*|}; cs1=${rest%%|*}
-    id2=${r2%%|*}; rest=${r2#*|}; cs2=${rest%%|*}; pe2=${rest#*|}
-    verdict="fresh"
-    { [ "$cs2" = "HIT" ] || [ "$id1" = "$id2" ]; } && verdict="CACHED"
-    cell="$cs1->$cs2/$verdict"
-    [ "$pe2" != "-" ] && cell="$cell(put!)"
-    row+=("$cell")
+  printf '%-14s' "$c"
+  for pi in "${!paths[@]}"; do
+    path=${paths[$pi]}
+    if [ -z "$path" ]; then printf ' %-18s' "n/a"; continue; fi
+    hits=0; colos=""; errs=0
+    for i in $(seq "$PROBES"); do
+      r=$(req "$path?case=$c&run=$RUN")
+      cs=$(printf '%s' "$r" | cut -d'|' -f2)
+      pe=$(printf '%s' "$r" | cut -d'|' -f3)
+      ray=$(printf '%s' "$r" | cut -d'|' -f4)
+      { [ "$cs" = "HIT" ] || [ "$cs" = "UPDATING" ]; } && hits=$((hits+1))
+      [ "$pe" != "-" ] && errs=$((errs+1))
+      case ",$colos," in *",$ray,"*) ;; *) colos="${colos:+$colos,}$ray";; esac
+      sleep "$SLEEP"
+    done
+    cell="$hits/$PROBES hits"
+    [ "$errs" -gt 0 ] && cell="$cell,${errs}put!"
+    cell="$cell@$colos"
+    printf ' %-18s' "$cell"
   done
-  printf '%-14s %-26s %-26s %-26s\n' "${row[@]}"
+  printf '\n'
 done
 rm -f /tmp/vh.$$ /tmp/vb.$$
