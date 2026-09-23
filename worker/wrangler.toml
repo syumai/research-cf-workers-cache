@@ -1,0 +1,8 @@
+name = "study-cf-workers-cache"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+# Set to the deployed Vercel origin, e.g. https://<project>.vercel.app
+ORIGIN_BASE = "https://PLACEHOLDER.vercel.app"
