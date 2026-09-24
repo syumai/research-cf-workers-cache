@@ -60,15 +60,16 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 ## Same behavior on both paths
 
 - **`heuristic` (no explicit freshness): the same ~7,200s (~2h) TTL.** With
-  `Cache-Control: public` + `Last-Modified: now-30min`, *neither* cache applied
-  RFC 9111 §4.2.2 heuristic freshness (10% of the LM age ≈ 180s). Both held the
+  `Cache-Control: public` + `Last-Modified: now-30min`, both caches held the
   entry for ≈7,200s (~2h) before re-fetching — Workers Cache: last HIT at age
   7,121s, `EXPIRED` at ~7,242s; CDN edges: last HITs at ages 7,067s (SJC) and
-  6,945s (SEA). This matches Cloudflare's per-status default TTL table
-  (status 200 → 7,200s), which the [Workers Cache docs](https://developers.cloudflare.com/cache/)
-  publish for responses without explicit freshness — the CDN edge TTL default
-  is the same value. An earlier measurement that suggested "~200s vs ~16min"
-  was eviction / node variance, not TTL expiry.
+  6,945s (SEA). Neither applied the classic RFC 9111 §4.2.2 formula (10% of
+  the LM age ≈ 180s); instead both use Cloudflare's own per-status default
+  TTL table as their heuristic-freshness implementation — documented for
+  [Workers Cache](https://developers.cloudflare.com/workers/cache/configuration/)
+  (status 200 → 7,200s) and for the [CDN edge](https://developers.cloudflare.com/cache/how-to/configure-cache-status-code/)
+  (200/206/301 → 120m), the same value. An earlier measurement that suggested
+  "~200s vs ~16min" was eviction / node variance, not TTL expiry.
 - **`stale-while-revalidate`: identical semantics.** Workers Cache implements
   RFC 5861 (`Cf-Cache-Status: UPDATING` — stale served instantly, background
   revalidation, next request gets the new `origin_id`), and the CDN does the

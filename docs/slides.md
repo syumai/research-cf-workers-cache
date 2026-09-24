@@ -53,8 +53,10 @@ title: Cloudflare Workers Cache vs Proxy Cache
 | Workers Cache | **~7,200s（約2時間）保持 → EXPIRED**（最終HIT age 7,121s） |
 | CDN | **~7,200s（約2時間）保持 → EXPIRED**（同一挙動） |
 
-→ どちらもRFCヒューリスティックではなく、Cloudflareの
+→ どちらもRFC式（10%）ではなく、Cloudflareの
 **ステータス別デフォルトTTL表（200→7,200s）**を使用 — 同一のTTL
+（[Workers Cache docs](https://developers.cloudflare.com/workers/cache/configuration/) /
+[CDN docs](https://developers.cloudflare.com/cache/how-to/configure-cache-status-code/)）
 （以前の「200s vs 16分」はevictionの誤認）
 
 ---

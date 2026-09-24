@@ -60,15 +60,16 @@
 ## 両パスで同じだった挙動
 
 - **`heuristic`（明示的鮮度なし）：同一の ~7,200s（約2時間）TTL。**
-  `Cache-Control: public` + `Last-Modified: 現在-30分` に対し、*どちらの*
-  キャッシュも RFC 9111 §4.2.2 のヒューリスティック鮮度（LM経過時間の10% ≈
-  180s）を適用せず、どちらも ≈7,200s（約2時間）保持してから再取得しました
-  — Workers Cache：age 7,121s で最終 HIT、~7,242s で `EXPIRED`。CDN エッジ：
-  最終 HIT は age 7,067s（SJC）/ 6,945s（SEA）。これは明示的な鮮度
-  ディレクティブがないレスポンスに対して Workers Cache のドキュメントが
-  公開しているステータス別デフォルトTTL表（status 200 → 7,200s）と一致し、
-  CDN のデフォルト edge TTL も同じ値です。以前の計測で示した「~200s vs
-  ~16分」は TTL 失効ではなく eviction / ノード差の誤認でした。
+  `Cache-Control: public` + `Last-Modified: 現在-30分` に対し、両キャッシュ
+  とも ≈7,200s（約2時間）保持してから再取得しました — Workers Cache：
+  age 7,121s で最終 HIT、~7,242s で `EXPIRED`。CDN エッジ：最終 HIT は
+  age 7,067s（SJC）/ 6,945s（SEA）。古典的な RFC 9111 §4.2.2 の式
+  （LM経過時間の10% ≈ 180s）はどちらも適用しておらず、代わりに
+  Cloudflare 独自のステータス別デフォルトTTL表がヒューリスティック鮮度の
+  実装として使われています — [Workers Cache のドキュメント](https://developers.cloudflare.com/workers/cache/configuration/)
+  （status 200 → 7,200s）と [CDN エッジのドキュメント](https://developers.cloudflare.com/cache/how-to/configure-cache-status-code/)
+  （200/206/301 → 120m）の両方に明記された同じ値です。以前の計測で示した
+  「~200s vs ~16分」は TTL 失効ではなく eviction / ノード差の誤認でした。
 - **`stale-while-revalidate`：同一のセマンティクス。** Workers Cache は RFC 5861
   を実装（`Cf-Cache-Status: UPDATING` — stale を即返却しバックグラウンドで再検証、
   次のリクエストは新しい `origin_id`）し、CDN も同じ挙動を示しました：140秒の
