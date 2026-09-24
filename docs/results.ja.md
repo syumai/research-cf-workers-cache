@@ -12,7 +12,7 @@
 |---|---|---|---|
 | `explicit`（max-age=120） | **HIT** | **HIT** | **HIT** |
 | `expires` | **HIT** | **HIT** | **HIT** |
-| `heuristic`（public + LM-30分） | **HIT、その後 ~200s で失効**（≈ LM経過時間の10%、RFC準拠） | **HIT ≥ 602s**、~16分で失効 — RFCヒューリスティックを大きく超える固定デフォルトTTL | **HIT**（277s 時点でもHIT） |
+| `heuristic`（public + LM-30分） | **~7,200s（約2時間）まで HIT、その後 EXPIRED** — 再計測：age 7,121s で最終 HIT、~7,242s で失効 | **~7,200s（約2時間）まで HIT、その後 EXPIRED** — 同一挙動：各 colo で最終 HIT は age 7,067s / 6,945s | **HIT**（277s 時点でもHIT） |
 | `short`（max-age=20） | **HIT** | **HIT** | — |
 | `swr`（max-age=20 + `stale-while-revalidate=120`） | **`UPDATING`** — stale を即返却しバックグラウンドで再検証。次のリクエストは新しい `origin_id` | **`UPDATING`** — CDN も同じ async SWR 挙動（revalidate 中は stale 返却、その後 HIT） | — |
 | `nostore` | BYPASS | BYPASS | 返却なし |
@@ -24,15 +24,7 @@
 
 ## 確認できた違い
 
-1. **ヒューリスティック鮮度：Workers Cache は RFC 準拠、CDN は固定デフォルト。**
-   `Cache-Control: public` + `Last-Modified: 現在-30分` は RFC 9111 §4.2.2 では
-   ~200s の鮮度（30分の10%）になります。Workers Cache は ~60s で HIT を返し
-   ~6分までに再取得 — RFC と整合。CDN は **age 602s でも HIT** を返し、
-   ~16分まで再取得しませんでした — ヒューリスティックよりはるかに長い固定の
-   デフォルト edge TTL を適用しており、ここではむしろ RFC より*積極的に*
-   キャッシュしていることになります。
-
-2. **カスタムヘッダの `Vary`：Workers Cache は自動、CDN は opt-in（仕様通り）。**
+1. **カスタムヘッダの `Vary`：Workers Cache は自動、CDN は opt-in（仕様通り）。**
    `Vary: X-Variant` に対し、Workers Cache は variant ごとのエントリを保持し
    常に正しいボディ（`a`→`a`、`b`→`b`）を返しました。CDN はデフォルトでは
    `Vary` を無視します — [Cloudflare の cache ドキュメント](https://developers.cloudflare.com/cache/concepts/cache-control/)
@@ -48,7 +40,7 @@
    つまり本質的な違いは*デフォルト*であり、Workers Cache は RFC 9111 に
    標準準拠するのに対し、CDN はヘッダ単位の opt-in 設定が必要です。
 
-3. **アーキテクチャ：tiered vs ローカル。**
+2. **アーキテクチャ：tiered vs ローカル。**
    Workers Cache は、エントリを一度もフェッチしていない colo でも HIT を返しました
    （上位ティアを持つ tiered cache）。CDN 側は各エッジ colo が HIT 前に1回ずつ
    MISS しました（colo 間の HIT は観測されず）。`caches.default` は厳密に
@@ -57,7 +49,7 @@
    多数のエッジロケーションに分散する負荷では、Cache API は N 個の小さな
    キャッシュとして振る舞います。
 
-4. **Cache API は別プロダクト。**
+3. **Cache API は別プロダクト。**
    `caches.default` は Worker 側でオリジンのディレクティブを*上書き*可能 —
    `nostore`/`private` レスポンスに書き換え済み `Cache-Control` を付けて配信
    できます — ただし `Set-Cookie` ボディはヘッダに関わらず拒否され、tiered
@@ -67,6 +59,16 @@
 
 ## 両パスで同じだった挙動
 
+- **`heuristic`（明示的鮮度なし）：同一の ~7,200s（約2時間）TTL。**
+  `Cache-Control: public` + `Last-Modified: 現在-30分` に対し、*どちらの*
+  キャッシュも RFC 9111 §4.2.2 のヒューリスティック鮮度（LM経過時間の10% ≈
+  180s）を適用せず、どちらも ≈7,200s（約2時間）保持してから再取得しました
+  — Workers Cache：age 7,121s で最終 HIT、~7,242s で `EXPIRED`。CDN エッジ：
+  最終 HIT は age 7,067s（SJC）/ 6,945s（SEA）。これは明示的な鮮度
+  ディレクティブがないレスポンスに対して Workers Cache のドキュメントが
+  公開しているステータス別デフォルトTTL表（status 200 → 7,200s）と一致し、
+  CDN のデフォルト edge TTL も同じ値です。以前の計測で示した「~200s vs
+  ~16分」は TTL 失効ではなく eviction / ノード差の誤認でした。
 - **`stale-while-revalidate`：同一のセマンティクス。** Workers Cache は RFC 5861
   を実装（`Cf-Cache-Status: UPDATING` — stale を即返却しバックグラウンドで再検証、
   次のリクエストは新しい `origin_id`）し、CDN も同じ挙動を示しました：140秒の
@@ -92,9 +94,13 @@
 - CDN パスのキャッシュルール：`http.host eq "cache-compare.syumai.dev"` →
   `set_cache_settings`（`cache: true` で eligible。後に `vary.headers.
   x-variant = passthrough` を追加）。明示的な edge TTL は未設定 —
-  heuristic の長い TTL は設定ミスではなく CDN のデフォルトです。
+  ~7,200s の heuristic TTL は設定ミスではなく両パス共通のプラットフォーム
+  デフォルトです。
 - CDN における `Set-Cookie` 抑止は期待される RFC 挙動であり、完全性のために
   記載しています。
-- 時刻：Workers Cache の heuristic TTL は (60s, ~390s] に bracket — RFC 10%
-  （~200s）と整合。CDN は age 602s で HIT、~16分で失効 — デフォルト edge TTL
-  は RFC ヒューリスティックの ~3〜5倍。
+- heuristic TTL の計測（2026-09-23）：Workers Cache は ~06:46:18 に保存、
+  age 7,121s（08:44:59）で最終 HIT、08:47:00 に `EXPIRED` → TTL ∈ (7,121,
+  7,242]s。CDN エッジ：SJC は ~06:46:32 に保存、age 7,067s で最終 HIT、
+  08:50:21 に `EXPIRED` → TTL ∈ (7,067, ~7,189]s。SEA は age 6,945s で最終
+  HIT、08:54:22 に `EXPIRED`。いずれの bracket も 7,200s（2時間）に一致
+  または直前まで到達しています。

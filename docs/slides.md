@@ -43,16 +43,19 @@ title: Cloudflare Workers Cache vs Proxy Cache
 
 ---
 
-# わかったこと①：ヒューリスティック鮮度
+# わかったこと①：ヒューリスティック鮮度（訂正版）
 
-`Cache-Control: public` + `Last-Modified: 現在-30分`（RFC鮮度 ≈200s）
+`Cache-Control: public` + `Last-Modified: 現在-30分`
+（RFC 9111 §4.2.2 のヒューリスティック鮮度 ≈ 180s）
 
-| レイヤ | 実測 |
+| レイヤ | 実測（再計測） |
 |---|---|
-| Workers Cache | ~60s HIT → ~6分以内に失効（**RFC準拠**） |
-| CDN | **age 602sでもHIT**、~16分で失効（固定デフォルトTTL） |
+| Workers Cache | **~7,200s（約2時間）保持 → EXPIRED**（最終HIT age 7,121s） |
+| CDN | **~7,200s（約2時間）保持 → EXPIRED**（同一挙動） |
 
-→ CDNの方がむしろRFCより**積極的に長く保持**
+→ どちらもRFCヒューリスティックではなく、Cloudflareの
+**ステータス別デフォルトTTL表（200→7,200s）**を使用 — 同一のTTL
+（以前の「200s vs 16分」はevictionの誤認）
 
 ---
 
@@ -86,6 +89,7 @@ title: Cloudflare Workers Cache vs Proxy Cache
 
 # わかったこと④：同じだった挙動
 
+- **heuristic TTL**: 両者とも ~7,200s（約2時間） — RFCヒューリスティック（~180s）ではなく同一のデフォルトTTL表
 - **SWR（`stale-while-revalidate`）**: 両者とも `UPDATING` —
   staleを即返却しバックグラウンドで再検証 → 次回 `HIT`
   （CDN側は [2026-02 からasync SWR対応](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)）
@@ -98,8 +102,9 @@ title: Cloudflare Workers Cache vs Proxy Cache
 
 # まとめ
 
-- Workers Cache は**RFCに忠実なキャッシュ**（heuristic TTL・Vary が自動）
-- CDNは**デフォルトが独自**：heuristicはRFCより長く保持、Varyはopt-in
-- SWR・認証publicなどの基本挙動は**両者同一**
+- Workers Cache は**Varyを自動でRFC準拠**、CDNはopt-in設定が必要（仕様差）
+- Workers Cache は**tiered**、CDNエッジ・Cache APIはローカルスコープ
+- heuristic TTL・SWR・認証publicなどの基本挙動は**両者同一**
+  （heuristicは両者ともRFCではなく7,200sのデフォルトTTL）
 - Cache API（`caches.default`）は別物：ヘッダ上書き可能だがcoloローカル
 - 検証コード・全データ: https://github.com/syumai/research-cf-workers-cache

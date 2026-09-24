@@ -11,7 +11,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 |---|---|---|---|
 | `explicit` (max-age=120) | **HIT** | **HIT** | **HIT** |
 | `expires` | **HIT** | **HIT** | **HIT** |
-| `heuristic` (public + LM-30min) | **HIT, then expires ~200s** (≈ RFC 10% of LM age) | **HIT ≥ 602s**, expired by ~16min — fixed default TTL, far beyond RFC heuristic | **HIT** (still HIT ≥ 277s) |
+| `heuristic` (public + LM-30min) | **HIT until ~7,200s (~2h), then EXPIRED** — re-measured; last HIT at age 7,121s, expired at ~7,242s | **HIT until ~7,200s (~2h), then EXPIRED** — same behavior: edge colos last HIT at ages 7,067s / 6,945s | **HIT** (still HIT ≥ 277s) |
 | `short` (max-age=20) | **HIT** | **HIT** | — |
 | `swr` (max-age=20 + `stale-while-revalidate=120`) | **`UPDATING`** — serves stale, revalidates in background; next request gets the new `origin_id` | **`UPDATING`** — same async-SWR behavior (stale served while revalidating, then HIT) | — |
 | `nostore` | BYPASS | BYPASS | never served |
@@ -23,15 +23,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 
 ## Differences observed
 
-1. **Heuristic freshness: RFC on Workers Cache, fixed default on the CDN.**
-   `Cache-Control: public` + `Last-Modified: now-30min` gives ~200s freshness
-   under RFC 9111 §4.2.2 (10% of 30min). Workers Cache served a HIT at ~60s and
-   re-fetched by ~6min — consistent with the RFC. The CDN still served a HIT at
-   **age 602s** and only re-fetched after ~16min — it applies a fixed default
-   edge TTL, much longer than the heuristic, i.e. it caches *more*
-   aggressively than RFC here rather than less.
-
-2. **`Vary` on a custom header: automatic on Workers Cache, opt-in on the
+1. **`Vary` on a custom header: automatic on Workers Cache, opt-in on the
    CDN (by design).** With `Vary: X-Variant`, Workers Cache kept per-variant
    entries and always returned the right body (`a`→`a`, `b`→`b`). The CDN
    ignores `Vary` by default — per the [Cloudflare cache docs](https://developers.cloudflare.com/cache/concepts/cache-control/):
@@ -48,7 +40,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    Workers Cache follows RFC 9111 out of the box, the CDN needs per-header
    opt-in configuration.
 
-3. **Architecture: tiered vs. local.**
+2. **Architecture: tiered vs. local.**
    Workers Cache answered a HIT in a colo that never stored the entry
    (upper-tier tiered cache). On the CDN path each edge colo missed once
    before hitting (no cross-colo HIT observed). `caches.default` is strictly
@@ -57,7 +49,7 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
    probes. For load that lands in many edge locations, the Cache API behaves
    like N small caches.
 
-4. **The Cache API is a different product.**
+3. **The Cache API is a different product.**
    `caches.default` lets the Worker *override* origin directives — serving
    `nostore`/`private` responses with a rewritten `Cache-Control` works —
    but it still refuses `Set-Cookie` bodies regardless of headers, and it is
@@ -67,6 +59,16 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 
 ## Same behavior on both paths
 
+- **`heuristic` (no explicit freshness): the same ~7,200s (~2h) TTL.** With
+  `Cache-Control: public` + `Last-Modified: now-30min`, *neither* cache applied
+  RFC 9111 §4.2.2 heuristic freshness (10% of the LM age ≈ 180s). Both held the
+  entry for ≈7,200s (~2h) before re-fetching — Workers Cache: last HIT at age
+  7,121s, `EXPIRED` at ~7,242s; CDN edges: last HITs at ages 7,067s (SJC) and
+  6,945s (SEA). This matches Cloudflare's per-status default TTL table
+  (status 200 → 7,200s), which the [Workers Cache docs](https://developers.cloudflare.com/cache/)
+  publish for responses without explicit freshness — the CDN edge TTL default
+  is the same value. An earlier measurement that suggested "~200s vs ~16min"
+  was eviction / node variance, not TTL expiry.
 - **`stale-while-revalidate`: identical semantics.** Workers Cache implements
   RFC 5861 (`Cf-Cache-Status: UPDATING` — stale served instantly, background
   revalidation, next request gets the new `origin_id`), and the CDN does the
@@ -91,9 +93,12 @@ observe the caching layer directly; `origin_id` proves when the origin was hit.
 - Cache Rule used on the CDN path: `http.host eq "cache-compare.syumai.dev"` →
   `set_cache_settings` with `cache: true` (eligible for cache; later extended
   with `vary.headers.x-variant = passthrough`). No explicit edge TTL was set —
-  the long heuristic TTL is the CDN default, not a misconfiguration.
+  the ~7,200s heuristic TTL is the platform default on both paths, not a
+  misconfiguration.
 - `Set-Cookie` suppression on the CDN is expected RFC behavior; including it
   for completeness.
-- Times: heuristic TTL on Workers Cache bracketed to (60s, ~390s] — consistent
-  with RFC 10% (~200s). CDN served a HIT at age 602s and expired by ~16min,
-  i.e. a default edge TTL ~3-5x the RFC heuristic.
+- Heuristic TTL measurement (2026-09-23): Workers Cache entry stored ~06:46:18,
+  last HIT at age 7,121s (08:44:59), `EXPIRED` at 08:47:00 → TTL ∈ (7,121,
+  7,242]s. CDN edges: SJC stored ~06:46:32, last HIT at age 7,067s,
+  `EXPIRED` at 08:50:21 → TTL ∈ (7,067, ~7,189]s; SEA last HIT at age 6,945s,
+  `EXPIRED` at 08:54:22. All brackets sit at or just under 7,200s (2h).
